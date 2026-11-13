@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: docker.io/library/postgres:16
+        env:
+          POSTGRES_USER: queuepass
+          POSTGRES_PASSWORD: queuepass
+          POSTGRES_DB: queuepass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U queuepass"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: docker.io/library/redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://queuepass:queuepass@localhost:5432/queuepass
+      REDIS_REVOCATION_URL: redis://localhost:6379/0
+      REDIS_LOCKS_URL: redis://localhost:6379/1
+      REDIS_BROKER_URL: redis://localhost:6379/2
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - run: uv run pytest
