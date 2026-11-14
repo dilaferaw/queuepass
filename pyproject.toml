@@ -15,6 +15,11 @@ dependencies = [
     "alembic",
     "redis>=5",
     "greenlet",
+    "sqlmodel>=0.0.50",
+    "pyjwt>=2.15.1",
+    "pwdlib[argon2]>=0.3.1",
+    "python-multipart>=0.0.33",
+    "email-validator>=2.3.0",
 ]
 
 [project.scripts]
@@ -41,6 +46,21 @@ src = ["src"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 
+[tool.ruff.lint.flake8-bugbear]
+# B008 fires on `Depends(...)` used as a default value. That is exactly
+# FastAPI's dependency-injection idiom — the call is a marker, not executed
+# per-request. Whitelisting these FastAPI callables is the officially
+# recommended fix (see ruff docs for flake8-bugbear).
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Form",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.Cookie",
+]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
@@ -49,3 +69,16 @@ plugins = ["pydantic.mypy"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+# All async tests + fixtures share ONE session-scoped event loop.
+# Rationale: the app uses module-level `engine` / `async_session_factory`
+# (queuepass.core.db). SQLAlchemy-async's connection pool caches asyncpg
+# connections bound to the loop they were created on. With pytest-asyncio's
+# default (`function`-scoped loops), each new test gets a fresh loop, but the
+# pool still hands out connections from the previous loop — producing
+# `RuntimeError: got Future attached to a different loop` /
+# `InterfaceError: another operation is in progress`. Running every test on
+# one loop is both the fix and a better analogue of a real uvicorn process
+# (which has exactly one event loop for its lifetime).
+asyncio_default_test_loop_scope = "session"
+asyncio_default_fixture_loop_scope = "session"

@@ -6,6 +6,13 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
+# Importing the model modules has a side effect: their ``class X(SQLModel, table=True)``
+# statements register the corresponding tables on ``SQLModel.metadata``.
+# Alembic's autogenerate diffs ``target_metadata`` (== ``SQLModel.metadata``)
+# against the live DB, so without these imports the users table would be
+# invisible to ``alembic revision --autogenerate``. When you add a module with
+# new tables, add its import here too.
+import queuepass.modules.auth.models  # noqa: F401
 from queuepass.core.config import settings
 from queuepass.core.db import Base
 

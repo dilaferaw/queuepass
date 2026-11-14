@@ -1,1 +1,1 @@
-# TODO(increment-1): auth module goes here
+"""Feature modules — one package per vertical slice (auth, events, seats, ...)."""
