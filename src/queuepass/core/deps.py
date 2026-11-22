@@ -13,13 +13,16 @@ import uuid
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from redis.asyncio import Redis
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from queuepass.core.config import settings
 from queuepass.core.db import get_session
+from queuepass.core.redis import get_revocation_redis
 from queuepass.core.security import decode_token
 from queuepass.modules.auth.models import User
 from queuepass.modules.auth.repository import UserRepository
+from queuepass.modules.auth.revocation import RevocationStore
 
 # ``tokenUrl`` only exists so Swagger UI's "Authorize" button knows where to
 # POST credentials. The path itself must match ``router.py``'s login route,
@@ -28,9 +31,22 @@ from queuepass.modules.auth.repository import UserRepository
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_PREFIX}/auth/login")
 
 
+async def get_revocation_store(
+    redis: Redis = Depends(get_revocation_redis),
+) -> RevocationStore:
+    """Compose a ``RevocationStore`` bound to the DB 0 client.
+
+    The store is stateless — a new instance per request costs nothing, and it
+    keeps the dependency graph explicit (no hidden singleton to reset between
+    tests).
+    """
+    return RevocationStore(redis)
+
+
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
     session: AsyncSession = Depends(get_session),
+    revocation: RevocationStore = Depends(get_revocation_store),
 ) -> User:
     """Resolve the bearer token to an active ``User`` row.
 
@@ -70,11 +86,35 @@ async def get_current_user(
     if payload.get("type") != "access":
         raise credentials_exception
 
+    # Extract the revocation-relevant claims. Narrowing to ``str``/``int``
+    # simultaneously rejects malformed tokens and satisfies mypy strict — a
+    # crafted token without ``jti``/``iat`` should hit the same 401 as a
+    # deleted user, not a 500.
+    jti = payload.get("jti")
+    sub = payload.get("sub")
+    iat = payload.get("iat")
+    if not isinstance(jti, str) or not isinstance(sub, str) or not isinstance(iat, int):
+        raise credentials_exception
+
+    # Revocation checks run before the DB lookup — they are the whole point of
+    # this feature, and a revoked token should not cost a Postgres round-trip.
+    #   * JTI denylist catches single-token logout.
+    #   * User cutoff catches logout-everywhere; ``iat < cutoff`` means "issued
+    #     before the user invalidated all sessions". Compare against ``iat``
+    #     (issue time), not ``exp`` (expiry): comparing against ``exp`` would let
+    #     through tokens issued *after* the cutoff whose expiry predates it.
+    if await revocation.is_jti_revoked(jti):
+        raise credentials_exception
+
+    cutoff = await revocation.get_user_cutoff(sub)
+    if cutoff is not None and iat < cutoff:
+        raise credentials_exception
+
     # ``sub`` is the uuid4 as a string (see ``core.security.create_access_token``).
     # A forged or garbled token whose ``sub`` is not UUID-shaped raises
     # ``ValueError`` here and is rejected with the same 401 — no info about why.
     try:
-        user_id = uuid.UUID(str(payload["sub"]))
+        user_id = uuid.UUID(sub)
     except (KeyError, TypeError, ValueError):
         raise credentials_exception from None
 

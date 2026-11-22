@@ -11,13 +11,15 @@ The fake structurally implements ``UserRepositoryProtocol`` from
 """
 
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from datetime import date
 
 import pytest
+import pytest_asyncio
 
 from queuepass.core.security import decode_token, verify_password
 from queuepass.modules.auth.models import User
+from queuepass.modules.auth.revocation import RevocationStore
 from queuepass.modules.auth.service import (
     AuthService,
     EmailTakenError,
@@ -60,9 +62,13 @@ class FakeUserRepository:
         return user
 
 
-@pytest.fixture
-def service() -> Iterator[AuthService]:
-    yield AuthService(FakeUserRepository())
+@pytest_asyncio.fixture
+async def service(
+    fake_revocation_store: RevocationStore,
+) -> AsyncIterator[AuthService]:
+    # ``fake_revocation_store`` is from conftest — the service no longer
+    # constructs its own; the fixture owns both fakes.
+    yield AuthService(FakeUserRepository(), fake_revocation_store)
 
 
 # Shared values for the required keyword-only fields. Pulled out so each test

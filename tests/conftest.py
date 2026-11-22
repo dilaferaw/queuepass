@@ -11,6 +11,7 @@ Anything DB-shaped here is therefore guarded so unit tests do not pay its cost.
 from collections.abc import AsyncIterator, Callable
 from uuid import uuid4
 
+import fakeredis.aioredis
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -19,7 +20,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from queuepass.core.config import settings
+from queuepass.core.redis import revocation_redis
 from queuepass.main import app
+from queuepass.modules.auth.revocation import RevocationStore
 
 # --- pure helpers -----------------------------------------------------------
 # Random suffixes avoid cross-test collisions (and collisions with rows left
@@ -41,6 +44,23 @@ def unique_username() -> Callable[[], str]:
         return f"user_{uuid4().hex[:8]}"
 
     return _make
+
+
+# --- revocation store --------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def fake_revocation_store() -> AsyncIterator[RevocationStore]:
+    """In-process ``RevocationStore`` backed by ``fakeredis``.
+
+    Unit tests use this directly (via the service fixture) so they exercise the
+    same store code path as e2e without opening a socket.
+    """
+    fake = fakeredis.aioredis.FakeRedis()
+    try:
+        yield RevocationStore(fake)
+    finally:
+        await fake.aclose()
 
 
 # --- HTTP client -------------------------------------------------------------
@@ -90,6 +110,25 @@ async def _clean_users_between_e2e_tests(request: pytest.FixtureRequest) -> Asyn
         await engine.dispose()
 
     yield
+
+
+# --- revocation DB cleanup ---------------------------------------------------
+# Same path-gating pattern as ``_clean_users_between_e2e_tests``. Unit tests do
+# not talk to Redis, so they would only pay latency for a flush they do not need.
+# Only DB 0 is touched — DB 1 (locks) and DB 2 (Celery) are future increments'.
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _flush_revocation_redis_between_e2e_tests(
+    request: pytest.FixtureRequest,
+) -> AsyncIterator[None]:
+    if "/tests/e2e/" not in str(request.node.path):
+        yield
+        return
+
+    await revocation_redis.flushdb()
+    yield
+    await revocation_redis.flushdb()
 
 
 # --- composed fixtures -------------------------------------------------------

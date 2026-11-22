@@ -19,16 +19,22 @@ run the real repo, but they only exercise the wire behaviour — the correctness
 the rules above is covered in milliseconds by the unit tests.
 """
 
+import time
 from datetime import date
 
+import jwt
+
+from queuepass.core.config import settings
 from queuepass.core.security import (
     DUMMY_PASSWORD_HASH,
     create_access_token,
+    decode_token,
     hash_password,
     verify_password,
 )
 from queuepass.modules.auth.models import User
 from queuepass.modules.auth.repository import UserRepositoryProtocol
+from queuepass.modules.auth.revocation import RevocationStore
 
 
 # Module-local exception hierarchy. These are auth-domain errors, not shared
@@ -53,8 +59,9 @@ class InvalidCredentialsError(AuthError):
 
 
 class AuthService:
-    def __init__(self, repo: UserRepositoryProtocol) -> None:
+    def __init__(self, repo: UserRepositoryProtocol, revocation: RevocationStore) -> None:
         self.repo = repo
+        self._revocation = revocation
 
     async def register(
         self,
@@ -136,3 +143,46 @@ class AuthService:
         design where ``id`` only existed after INSERT.
         """
         return create_access_token(user.id)
+
+    async def logout(self, token: str) -> None:
+        """Revoke the current token by JTI. Idempotent by construction.
+
+        Deliberately takes the **raw token string**, not a resolved ``User``:
+        a revoked token would 401 inside ``get_current_user`` before we reach
+        this method, so the caller cannot retry a logout that already
+        succeeded. Decoding here (instead of routing through the dependency)
+        keeps logout retryable — expired tokens are treated as no-ops by the
+        caller (see the router), malformed ones surface as ``InvalidTokenError``.
+
+        ``payload['jti']`` / ``payload['exp']`` are both guaranteed present on
+        tokens minted by ``create_access_token``, but we still type-check them:
+        a hand-crafted token without ``exp`` should not 500 on a missing key.
+        """
+        payload = decode_token(token)  # raises ExpiredSignatureError / InvalidTokenError
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if not isinstance(jti, str) or not isinstance(exp, int):
+            # Surface as the standard decoder failure so the router's single
+            # 401 mapping covers this path too — no new exception type.
+            raise jwt.InvalidTokenError("missing jti or exp")
+        ttl = exp - int(time.time())
+        await self._revocation.revoke_jti(jti, ttl)
+
+    async def logout_all(self, user_id: str) -> None:
+        """Invalidate every token issued to ``user_id`` before now.
+
+        Sets the cutoff to the current epoch second. Every access token minted
+        at or before that instant fails the ``iat < cutoff`` check in
+        ``get_current_user``. The TTL is one full access-token lifetime plus a
+        small safety margin: any token minted after the cutoff is still
+        valid until it expires, and we do not need the cutoff to survive
+        longer than the longest-possible token minted *before* it.
+        """
+        # ``iat`` has 1-second integer resolution (``int(now.timestamp())``).
+        # Adding 1 second (ceiling to the next whole second) ensures that a
+        # token minted earlier within the *same* wall-clock second as
+        # ``logout_all`` still satisfies ``iat < cutoff`` on the very next
+        # request.
+        now = int(time.time()) + 1
+        ttl = settings.JWT_EXPIRE_MINUTES * 60 + 60
+        await self._revocation.set_user_cutoff(user_id, now, ttl)

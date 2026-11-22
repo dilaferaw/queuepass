@@ -32,6 +32,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "httpx",
+    "fakeredis>=2.40.0",
 ]
 
 [build-system]
