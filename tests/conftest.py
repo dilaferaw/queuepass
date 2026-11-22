@@ -9,6 +9,7 @@ Anything DB-shaped here is therefore guarded so unit tests do not pay its cost.
 """
 
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import fakeredis.aioredis
@@ -105,7 +106,12 @@ async def _clean_users_between_e2e_tests(request: pytest.FixtureRequest) -> Asyn
     engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.begin() as conn:
-            await conn.execute(text("TRUNCATE users RESTART IDENTITY CASCADE"))
+            await conn.execute(
+                text(
+                    "TRUNCATE seats, sections, ticket_types, events, users "
+                    "RESTART IDENTITY CASCADE"
+                )
+            )
     finally:
         await engine.dispose()
 
@@ -198,3 +204,47 @@ async def auth_headers(
     )
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+@pytest.fixture
+def sample_event_payload() -> dict[str, object]:
+    """Return a valid ``EventCreate`` payload dict with 2 ticket types, 2 sections, 3 seats each.
+
+    Tests mutate a ``copy.deepcopy`` of this dictionary to exercise negative
+    validation and conflict paths.
+    """
+    starts_at = datetime.now(UTC) + timedelta(days=7)
+    ends_at = starts_at + timedelta(hours=3)
+    return {
+        "name": "Queuepass Live",
+        "description": "Opening night reserved-seating concert",
+        "venue_name": "Symphony Hall",
+        "venue_address": "301 Massachusetts Ave, Boston, MA",
+        "starts_at": starts_at.isoformat(),
+        "ends_at": ends_at.isoformat(),
+        "timezone": "UTC",
+        "ticket_types": [
+            {"name": "Standard", "price_cents": 2500, "currency": "USD"},
+            {"name": "VIP", "price_cents": 10000, "currency": "USD"},
+        ],
+        "sections": [
+            {
+                "name": "Floor",
+                "ticket_type_name": "Standard",
+                "seats": [
+                    {"row_label": "A", "seat_number": 1},
+                    {"row_label": "A", "seat_number": 2},
+                    {"row_label": "B", "seat_number": 3},
+                ],
+            },
+            {
+                "name": "Balcony",
+                "ticket_type_name": "VIP",
+                "seats": [
+                    {"row_label": "A", "seat_number": 1},
+                    {"row_label": "B", "seat_number": 2},
+                    {"row_label": "B", "seat_number": 3},
+                ],
+            },
+        ],
+    }

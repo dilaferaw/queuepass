@@ -4,6 +4,7 @@ from queuepass.core.config import settings
 from queuepass.core.db import check_db
 from queuepass.core.redis import check_redis
 from queuepass.modules.auth.router import router as auth_router
+from queuepass.modules.events.router import router as events_router
 
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 
@@ -15,6 +16,14 @@ app.include_router(
     auth_router,
     prefix=f"{settings.API_V1_PREFIX}/auth",
     tags=["auth"],
+)
+# Events routes live under ``/api/v1/events`` (Increment 3: create + read the
+# Event/TicketType/Section/Seat domain). Prefix from settings keeps the
+# versioning consistent with the auth module.
+app.include_router(
+    events_router,
+    prefix=f"{settings.API_V1_PREFIX}/events",
+    tags=["events"],
 )
 
 

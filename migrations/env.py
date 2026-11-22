@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 # invisible to ``alembic revision --autogenerate``. When you add a module with
 # new tables, add its import here too.
 import queuepass.modules.auth.models  # noqa: F401
+import queuepass.modules.events.models  # noqa: F401
 from queuepass.core.config import settings
 from queuepass.core.db import Base
 

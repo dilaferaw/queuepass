@@ -16,3 +16,7 @@ wheels/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+
+# User artifacts (housekeeping from Increment 2)
+*.http
+.restfox/
